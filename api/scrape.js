@@ -130,13 +130,17 @@ function extractEmails(text) {
 // Helper: Find email on a page with multiple strategies
 async function findEmailOnPage(url) {
   try {
+    console.log(`      📄 Fetching: ${url}`);
     const response = await axios.get(url, {
       timeout: 10000,
       headers: HEADERS,
       maxRedirects: 5
     });
     
-    if (response.status !== 200) return null;
+    if (response.status !== 200) {
+      console.log(`      ⚠️ Status ${response.status} for ${url}`);
+      return null;
+    }
     
     const $ = cheerio.load(response.data);
     const emails = new Set();
@@ -148,6 +152,7 @@ async function findEmailOnPage(url) {
         const email = cleanEmail(href.replace('mailto:', ''));
         if (isValidEmail(email)) {
           emails.add(email.toLowerCase());
+          console.log(`        📧 Found mailto email: ${email}`);
         }
       }
     });
@@ -156,16 +161,21 @@ async function findEmailOnPage(url) {
     $('a[href]').each((i, el) => {
       const href = $(el).attr('href');
       if (href) {
-        // Check if href contains email
         const extracted = extractEmails(href);
-        extracted.forEach(e => emails.add(e));
+        extracted.forEach(e => {
+          emails.add(e);
+          console.log(`        📧 Found email in link: ${e}`);
+        });
       }
     });
     
     // Strategy 3: Check visible text
     const bodyText = $('body').text();
     const extracted = extractEmails(bodyText);
-    extracted.forEach(e => emails.add(e));
+    extracted.forEach(e => {
+      emails.add(e);
+      console.log(`        📧 Found email in text: ${e}`);
+    });
     
     // Strategy 4: Check specific elements that often contain emails
     const selectors = [
@@ -180,7 +190,10 @@ async function findEmailOnPage(url) {
       $(selector).each((i, el) => {
         const text = $(el).text();
         const extracted = extractEmails(text);
-        extracted.forEach(e => emails.add(e));
+        extracted.forEach(e => {
+          emails.add(e);
+          console.log(`        📧 Found email in ${selector}: ${e}`);
+        });
       });
     });
     
@@ -189,9 +202,9 @@ async function findEmailOnPage(url) {
       const content = $(el).html() || '';
       const extracted = extractEmails(content);
       extracted.forEach(e => {
-        // Only add if it looks like a real email (not encoded)
         if (e.includes('@') && !e.includes('{') && !e.includes('}')) {
           emails.add(e);
+          console.log(`        📧 Found email in script: ${e}`);
         }
       });
     });
@@ -201,7 +214,10 @@ async function findEmailOnPage(url) {
       const dataEmail = $(el).attr('data-email') || $(el).attr('data-contact') || '';
       if (dataEmail) {
         const extracted = extractEmails(dataEmail);
-        extracted.forEach(e => emails.add(e));
+        extracted.forEach(e => {
+          emails.add(e);
+          console.log(`        📧 Found email in data attribute: ${e}`);
+        });
       }
     });
     
@@ -218,8 +234,6 @@ async function findEmailOnPage(url) {
         }
       }
       
-      // Also check if it contains the business name (we don't have business name here)
-      // So we'll just prioritize non-generic emails
       if (isGeneric) {
         genericEmails.push(email);
       } else {
@@ -229,9 +243,11 @@ async function findEmailOnPage(url) {
     
     // Return priority emails first, then generic
     const allEmails = [...priorityEmails, ...genericEmails];
+    console.log(`      Found ${allEmails.length} total emails on page`);
     return allEmails.length > 0 ? allEmails[0] : null;
     
   } catch (error) {
+    console.log(`      ❌ Error fetching ${url}: ${error.message}`);
     return null;
   }
 }
@@ -239,13 +255,17 @@ async function findEmailOnPage(url) {
 // Helper: Find contact pages (expanded)
 async function findContactLinks(baseUrl) {
   try {
+    console.log(`      🔍 Looking for contact pages on ${baseUrl}`);
     const response = await axios.get(baseUrl, {
       timeout: 10000,
       headers: HEADERS,
       maxRedirects: 5
     });
     
-    if (response.status !== 200) return [];
+    if (response.status !== 200) {
+      console.log(`      ⚠️ Status ${response.status} for ${baseUrl}`);
+      return [];
+    }
     
     const $ = cheerio.load(response.data);
     const links = [];
@@ -270,6 +290,7 @@ async function findContactLinks(baseUrl) {
           if (!seenUrls.has(fullUrl)) {
             seenUrls.add(fullUrl);
             links.push(fullUrl);
+            console.log(`        Found contact page: ${fullUrl}`);
           }
         } catch (e) {
           // Invalid URL, skip
@@ -277,9 +298,10 @@ async function findContactLinks(baseUrl) {
       }
     });
     
-    // Return up to 5 contact pages (more chances to find email)
+    console.log(`      Found ${links.length} contact pages`);
     return links.slice(0, 5);
   } catch (error) {
+    console.log(`      ❌ Error finding contact pages: ${error.message}`);
     return [];
   }
 }
@@ -298,11 +320,11 @@ async function findEmailForBusiness(website) {
   }
   
   // Try contact pages
-  console.log(`    🔍 Checking contact pages...`);
+  console.log(`    🔍 No email on main page, checking contact pages...`);
   const contactLinks = await findContactLinks(website);
   
   for (const link of contactLinks) {
-    console.log(`      📄 Checking: ${link}`);
+    console.log(`      📄 Checking contact page: ${link}`);
     email = await findEmailOnPage(link);
     if (email) {
       console.log(`    ✅ Found email on contact page: ${email}`);
@@ -310,7 +332,7 @@ async function findEmailForBusiness(website) {
     }
   }
   
-  console.log(`    ❌ No email found`);
+  console.log(`    ❌ No email found anywhere on ${website}`);
   return '';
 }
 
@@ -322,67 +344,140 @@ async function getPlaceDetails(placeId, apiKey) {
     key: apiKey
   };
   
+  console.log(`  📋 Fetching details for place ID: ${placeId}`);
   const response = await axios.get(DETAILS_URL, { params, timeout: 30000 });
-  return response.data.result || {};
+  const result = response.data.result || {};
+  console.log(`    Name: ${result.name || 'Unknown'}`);
+  console.log(`    Website: ${result.website || 'None'}`);
+  return result;
 }
 
-// Helper: Collect places via text search
+// Helper: Collect places via text search with multiple formats
 async function collectPlaces(query, location, apiKey, maxResults) {
+  console.log(`\n📥 Starting search: "${query}" in "${location}"`);
+  console.log(`   Max results: ${maxResults}`);
+  
   const results = [];
   let pageToken = null;
   const seenIds = new Set();
   
-  while (results.length < maxResults) {
+  // Try different query formats
+  const queryFormats = [
+    `${query} in ${location}`,
+    `${query} near ${location}`,
+    `${query} ${location}`,
+    `${query}+${location}`
+  ];
+  
+  let currentFormatIndex = 0;
+  let totalAttempts = 0;
+  
+  while (results.length < maxResults && currentFormatIndex < queryFormats.length) {
     const params = { key: apiKey };
     if (pageToken) {
       params.pagetoken = pageToken;
+      console.log(`  📄 Fetching next page with token: ${pageToken.substring(0, 20)}...`);
     } else {
-      params.query = `${query} in ${location}`;
+      // Try the next format
+      params.query = queryFormats[currentFormatIndex];
+      console.log(`  🔍 Trying format ${currentFormatIndex + 1}: "${params.query}"`);
     }
     
-    const response = await axios.get(TEXT_SEARCH_URL, { params, timeout: 30000 });
-    const data = response.data;
-    const status = data.status;
+    totalAttempts++;
     
-    if (status !== 'OK' && status !== 'ZERO_RESULTS') {
-      throw new Error(`Places API error: ${status} - ${data.error_message || ''}`);
-    }
-    
-    for (const item of data.results || []) {
-      const pid = item.place_id;
-      if (pid && !seenIds.has(pid)) {
-        seenIds.add(pid);
-        results.push(item);
-        if (results.length >= maxResults) break;
+    try {
+      console.log(`  📤 Sending request to Google Places API...`);
+      console.log(`     URL: ${TEXT_SEARCH_URL}`);
+      console.log(`     Params: ${JSON.stringify(params, null, 2)}`);
+      
+      const response = await axios.get(TEXT_SEARCH_URL, { params, timeout: 30000 });
+      const data = response.data;
+      const status = data.status;
+      
+      console.log(`  📥 Response status: ${status}`);
+      
+      if (status === 'OK') {
+        // Success! Process results
+        const items = data.results || [];
+        console.log(`  ✅ Found ${items.length} results on this page`);
+        
+        let newItems = 0;
+        for (const item of items) {
+          const pid = item.place_id;
+          if (pid && !seenIds.has(pid)) {
+            seenIds.add(pid);
+            results.push(item);
+            newItems++;
+            if (results.length >= maxResults) break;
+          }
+        }
+        console.log(`  📊 Added ${newItems} new businesses (total: ${results.length})`);
+        
+        pageToken = data.next_page_token;
+        if (!pageToken) {
+          console.log(`  📄 No more pages, trying next format...`);
+          currentFormatIndex++;
+          pageToken = null;
+          continue;
+        }
+        
+        console.log(`  📄 Next page token received: ${pageToken.substring(0, 20)}...`);
+        // Wait for token to become valid
+        await new Promise(resolve => setTimeout(resolve, 2200));
+        
+      } else if (status === 'ZERO_RESULTS') {
+        console.log(`  ⚠️ No results found for format: "${params.query}"`);
+        currentFormatIndex++;
+        pageToken = null;
+      } else {
+        console.log(`  ❌ Format "${params.query}" failed with status: ${status}`);
+        console.log(`     Error message: ${data.error_message || 'No error message'}`);
+        currentFormatIndex++;
+        pageToken = null;
       }
+    } catch (error) {
+      console.log(`  ❌ Request failed: ${error.message}`);
+      if (error.response) {
+        console.log(`     Response status: ${error.response.status}`);
+        console.log(`     Response data: ${JSON.stringify(error.response.data, null, 2)}`);
+      }
+      currentFormatIndex++;
+      pageToken = null;
     }
-    
-    pageToken = data.next_page_token;
-    if (!pageToken) break;
-    
-    await new Promise(resolve => setTimeout(resolve, 2200));
   }
+  
+  console.log(`\n📊 Search complete for "${location}"`);
+  console.log(`   Total businesses found: ${results.length}`);
+  console.log(`   Query formats tried: ${totalAttempts}`);
   
   return results.slice(0, maxResults);
 }
 
 // Main handler
 module.exports = async (req, res) => {
+  console.log('\n🚀 ===== NEW REQUEST =====');
+  console.log(`📅 Time: ${new Date().toISOString()}`);
+  
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   
   if (req.method === 'OPTIONS') {
+    console.log('📡 OPTIONS request received');
     return res.status(200).end();
   }
   
   if (req.method !== 'POST') {
+    console.log(`❌ Method not allowed: ${req.method}`);
     return res.status(405).json({ error: 'Method not allowed' });
   }
   
   try {
     const API_KEY = process.env.GOOGLE_PLACES_API_KEY;
     
+    console.log(`🔑 API Key present: ${API_KEY ? 'Yes (starts with ' + API_KEY.substring(0, 8) + '...)' : 'No'}`);
+    
     if (!API_KEY) {
+      console.error('❌ API key not configured');
       return res.status(500).json({ 
         error: 'API key not configured. Please set GOOGLE_PLACES_API_KEY environment variable.' 
       });
@@ -396,87 +491,85 @@ module.exports = async (req, res) => {
       skipEmails = false 
     } = req.body;
     
+    console.log(`📋 Request parameters:`);
+    console.log(`   Query: "${query}"`);
+    console.log(`   Location: "${location}"`);
+    console.log(`   Sub-Areas: "${subAreas}"`);
+    console.log(`   Max Results: ${maxResults}`);
+    console.log(`   Skip Emails: ${skipEmails}`);
+    
     if (!query || !location) {
+      console.error('❌ Missing required fields');
       return res.status(400).json({ 
         error: 'Missing required fields: query and location are required' 
       });
     }
     
-    let areas = [location];
+    // Clean and validate location format
+    const cleanLocation = location.trim();
+    console.log(`📍 Clean location: "${cleanLocation}"`);
+    
+    let areas = [cleanLocation];
     if (subAreas && subAreas.trim()) {
       const extraAreas = subAreas.split(',').map(s => s.trim()).filter(Boolean);
-      areas = [location, ...extraAreas];
+      areas = [cleanLocation, ...extraAreas];
+      console.log(`📍 Search areas: ${areas.join(', ')}`);
+    } else {
+      console.log(`📍 Searching only main location: ${cleanLocation}`);
     }
     
     const maxResultsNum = Math.min(parseInt(maxResults) || 100, 2000);
     
-    console.log(`🔍 Searching for: ${query}`);
-    console.log(`📍 Locations: ${areas.join(', ')}`);
-    console.log(`📊 Target: ${maxResultsNum} businesses`);
+    console.log(`🎯 Target: ${maxResultsNum} businesses`);
     console.log(`📧 Email lookup: ${skipEmails ? 'SKIPPED' : 'ENABLED (AGGRESSIVE)'}`);
     
     // Collect all places
     const allPlaces = [];
     const seenIds = new Set();
     
-    if (areas.length === 1) {
-      const perAreaCap = Math.min(maxResultsNum, 60);
+    for (const area of areas) {
+      if (allPlaces.length >= maxResultsNum) break;
       
-      console.log(`Searching in ${location}...`);
-      const found = await collectPlaces(query, location, API_KEY, perAreaCap);
+      const perAreaCap = Math.min(maxResultsNum - allPlaces.length, 60);
+      console.log(`\n🔍 Searching in "${area}" (cap: ${perAreaCap})...`);
+      
+      const found = await collectPlaces(query, area, API_KEY, perAreaCap);
       const newPlaces = found.filter(p => !seenIds.has(p.place_id));
       newPlaces.forEach(p => seenIds.add(p.place_id));
       allPlaces.push(...newPlaces);
       
-      // Try variations
-      if (allPlaces.length < maxResultsNum) {
-        const variations = [
-          `${query} near ${location}`,
-          `${query} in ${location} area`,
-          `best ${query} ${location}`,
-          `${query} ${location}`,
-          `${query} services ${location}`,
-          `${query} providers ${location}`
-        ];
-        
-        for (const variation of variations) {
-          if (allPlaces.length >= maxResultsNum) break;
-          
-          console.log(`  Trying variation: "${variation}"...`);
-          const extraResults = await collectPlaces(variation, location, API_KEY, 60);
-          const newExtra = extraResults.filter(p => !seenIds.has(p.place_id));
-          newExtra.forEach(p => seenIds.add(p.place_id));
-          allPlaces.push(...newExtra);
-          
-          if (allPlaces.length >= maxResultsNum) break;
-        }
-      }
-    } else {
-      const perAreaCap = Math.max(1, Math.ceil(maxResultsNum / areas.length));
-      
-      for (const area of areas) {
-        if (allPlaces.length >= maxResultsNum) break;
-        
-        console.log(`Searching in ${area}...`);
-        const found = await collectPlaces(query, area, API_KEY, perAreaCap);
-        const newPlaces = found.filter(p => !seenIds.has(p.place_id));
-        newPlaces.forEach(p => seenIds.add(p.place_id));
-        allPlaces.push(...newPlaces);
-        console.log(`  Found ${newPlaces.length} new places (total: ${allPlaces.length})`);
-      }
+      console.log(`   Found ${newPlaces.length} new businesses in "${area}"`);
+      console.log(`   Running total: ${allPlaces.length}`);
     }
     
     const finalPlaces = allPlaces.slice(0, maxResultsNum);
-    console.log(`✅ Collected ${finalPlaces.length} unique businesses`);
+    console.log(`\n✅ Collected ${finalPlaces.length} unique businesses total`);
+    
+    if (finalPlaces.length === 0) {
+      console.warn('⚠️ No businesses found!');
+      return res.status(200).json({
+        success: true,
+        total: 0,
+        emailsFound: 0,
+        emailPercentage: 0,
+        data: [],
+        excel: null,
+        message: 'No businesses found. Try a different location or query.'
+      });
+    }
     
     // Process each place with email priority
     const rows = [];
     const total = finalPlaces.length;
     let emailsFound = 0;
-    let websitesWithEmail = 0;
+    
+    console.log(`\n📊 Processing ${total} businesses...`);
+    console.log(`📧 Email lookup: ${skipEmails ? 'SKIPPED' : 'ENABLED'}`);
     
     for (let i = 0; i < total; i++) {
       const place = finalPlaces[i];
+      console.log(`\n🔍 [${i+1}/${total}] Processing business...`);
+      
       const details = await getPlaceDetails(place.place_id, API_KEY);
       
       await new Promise(resolve => setTimeout(resolve, 50));
@@ -485,11 +578,18 @@ module.exports = async (req, res) => {
       let email = '';
       
       if (website && !skipEmails) {
+        console.log(`  🌐 Website found: ${website}`);
         email = await findEmailForBusiness(website);
         if (email) {
           emailsFound++;
-          if (website) websitesWithEmail++;
+          console.log(`  ✅ Email found: ${email}`);
+        } else {
+          console.log(`  ❌ No email found for this business`);
         }
+      } else if (!website) {
+        console.log(`  ⚠️ No website found for this business`);
+      } else if (skipEmails) {
+        console.log(`  ⏭️ Email lookup skipped`);
       }
       
       rows.push({
@@ -506,11 +606,14 @@ module.exports = async (req, res) => {
       
       // Log progress with email stats
       if ((i + 1) % 10 === 0 || i === total - 1) {
-        console.log(`  Processed ${i + 1}/${total}... Emails found: ${emailsFound}`);
+        console.log(`\n📊 Progress: ${i + 1}/${total}`);
+        console.log(`   Emails found: ${emailsFound}`);
+        console.log(`   Rate: ${Math.round((emailsFound / (i + 1)) * 100)}%`);
       }
     }
     
     // Create Excel file with email emphasis
+    console.log('\n📁 Creating Excel file...');
     const wb = XLSX.utils.book_new();
     
     // Main sheet with all data
@@ -525,6 +628,7 @@ module.exports = async (req, res) => {
     // Create separate sheet for emails only
     const emailRows = rows.filter(r => r.email);
     if (emailRows.length > 0) {
+      console.log(`📧 Creating emails-only sheet with ${emailRows.length} entries`);
       const emailData = [
         ['Name', 'Email', 'Phone', 'Website', 'Category', 'Address'],
         ...emailRows.map(r => [r.name, r.email, r.phone, r.website, r.category, r.address])
@@ -539,10 +643,12 @@ module.exports = async (req, res) => {
     const totalWithEmail = rows.filter(r => r.email).length;
     const emailPercentage = total > 0 ? Math.round((totalWithEmail / total) * 100) : 0;
     
-    console.log(`✅ COMPLETE!`);
+    console.log('\n✅ ===== COMPLETE =====');
     console.log(`  Total businesses: ${rows.length}`);
     console.log(`  Emails found: ${totalWithEmail} (${emailPercentage}%)`);
     console.log(`  Businesses with websites: ${rows.filter(r => r.website).length}`);
+    console.log(`  Excel file size: ${Math.round(excelBuffer.length / 1024)} KB`);
+    console.log('=====================\n');
     
     res.status(200).json({
       success: true,
@@ -555,7 +661,11 @@ module.exports = async (req, res) => {
     });
     
   } catch (error) {
-    console.error('❌ Scraping error:', error);
+    console.error('\n❌ ===== SCRAPING ERROR =====');
+    console.error(`  Error: ${error.message}`);
+    console.error(`  Stack: ${error.stack}`);
+    console.error('=============================\n');
+    
     res.status(500).json({ 
       error: error.message || 'An error occurred during scraping'
     });
