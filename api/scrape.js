@@ -30,18 +30,9 @@ const CONTACT_PATHS = [
 
 // Common email patterns to check
 const EMAIL_PATTERNS = [
-  /info@/i,
-  /contact@/i,
-  /hello@/i,
-  /support@/i,
-  /sales@/i,
-  /admin@/i,
-  /careers@/i,
-  /team@/i,
-  /founder@/i,
-  /ceo@/i,
-  /owner@/i,
-  /manager@/i
+  /info@/i, /contact@/i, /hello@/i, /support@/i, /sales@/i,
+  /admin@/i, /careers@/i, /team@/i, /founder@/i, /ceo@/i,
+  /owner@/i, /manager@/i, /reservation@/i, /bookings@/i
 ];
 
 // Headers to mimic real browser
@@ -57,35 +48,22 @@ const HEADERS = {
 // Helper: Check if email is valid and not blocked
 function isValidEmail(email) {
   if (!email) return false;
-  
   const lower = email.toLowerCase().trim();
-  
-  // Check blocklist
   for (const bad of EMAIL_BLOCKLIST) {
     if (lower.includes(bad.toLowerCase())) return false;
   }
-  
-  // Must have @ and a valid domain
   if (!lower.includes('@')) return false;
-  
   const parts = lower.split('@');
   if (parts.length !== 2) return false;
-  
   const domain = parts[1];
-  if (!domain || domain.length < 3) return false;
-  if (!domain.includes('.')) return false;
-  
-  // Check if it looks like a real email (not too long, not too short)
+  if (!domain || domain.length < 3 || !domain.includes('.')) return false;
   if (lower.length < 5 || lower.length > 100) return false;
-  
   return true;
 }
 
 // Helper: Clean email
 function cleanEmail(email) {
   if (!email) return '';
-  
-  // Remove common prefixes
   let cleaned = email
     .replace(/^mailto:/i, '')
     .replace(/^email:/i, '')
@@ -93,37 +71,24 @@ function cleanEmail(email) {
     .replace(/\?subject=.*$/i, '')
     .replace(/\?body=.*$/i, '')
     .trim();
-  
-  // Remove quotes
   cleaned = cleaned.replace(/^["']|["']$/g, '');
-  
   return cleaned;
 }
 
 // Helper: Extract emails from text
 function extractEmails(text) {
   if (!text) return [];
-  
   const emails = new Set();
-  
-  // Try strict regex first
   let matches = text.match(EMAIL_REGEX_STRICT) || [];
   matches.forEach(m => {
     const cleaned = cleanEmail(m);
-    if (isValidEmail(cleaned)) {
-      emails.add(cleaned.toLowerCase());
-    }
+    if (isValidEmail(cleaned)) emails.add(cleaned.toLowerCase());
   });
-  
-  // Try general regex
   matches = text.match(EMAIL_REGEX) || [];
   matches.forEach(m => {
     const cleaned = cleanEmail(m);
-    if (isValidEmail(cleaned)) {
-      emails.add(cleaned.toLowerCase());
-    }
+    if (isValidEmail(cleaned)) emails.add(cleaned.toLowerCase());
   });
-  
   return Array.from(emails);
 }
 
@@ -136,16 +101,14 @@ async function findEmailOnPage(url) {
       headers: HEADERS,
       maxRedirects: 5
     });
-    
     if (response.status !== 200) {
       console.log(`      ⚠️ Status ${response.status} for ${url}`);
       return null;
     }
-    
     const $ = cheerio.load(response.data);
     const emails = new Set();
-    
-    // Strategy 1: Check mailto links (most reliable)
+
+    // Strategy 1: Check mailto links
     $('a[href^="mailto:"]').each((i, el) => {
       const href = $(el).attr('href');
       if (href) {
@@ -156,28 +119,22 @@ async function findEmailOnPage(url) {
         }
       }
     });
-    
+
     // Strategy 2: Check all links for email patterns
     $('a[href]').each((i, el) => {
       const href = $(el).attr('href');
       if (href) {
         const extracted = extractEmails(href);
-        extracted.forEach(e => {
-          emails.add(e);
-          console.log(`        📧 Found email in link: ${e}`);
-        });
+        extracted.forEach(e => emails.add(e));
       }
     });
-    
+
     // Strategy 3: Check visible text
     const bodyText = $('body').text();
     const extracted = extractEmails(bodyText);
-    extracted.forEach(e => {
-      emails.add(e);
-      console.log(`        📧 Found email in text: ${e}`);
-    });
-    
-    // Strategy 4: Check specific elements that often contain emails
+    extracted.forEach(e => emails.add(e));
+
+    // Strategy 4: Check specific elements
     const selectors = [
       'p', 'span', 'div', 'li', 'td', 'a',
       '.email', '.contact', '.info', '.address',
@@ -185,46 +142,28 @@ async function findEmailOnPage(url) {
       '[class*="email"]', '[class*="contact"]',
       '[id*="email"]', '[id*="contact"]'
     ];
-    
     selectors.forEach(selector => {
       $(selector).each((i, el) => {
         const text = $(el).text();
         const extracted = extractEmails(text);
-        extracted.forEach(e => {
-          emails.add(e);
-          console.log(`        📧 Found email in ${selector}: ${e}`);
-        });
+        extracted.forEach(e => emails.add(e));
       });
     });
-    
-    // Strategy 5: Check script and style tags for email (sometimes encoded)
+
+    // Strategy 5: Check script and style tags
     $('script, style').each((i, el) => {
       const content = $(el).html() || '';
       const extracted = extractEmails(content);
       extracted.forEach(e => {
         if (e.includes('@') && !e.includes('{') && !e.includes('}')) {
           emails.add(e);
-          console.log(`        📧 Found email in script: ${e}`);
         }
       });
     });
-    
-    // Strategy 6: Check for email in data attributes
-    $('[data-email], [data-contact], [data-info]').each((i, el) => {
-      const dataEmail = $(el).attr('data-email') || $(el).attr('data-contact') || '';
-      if (dataEmail) {
-        const extracted = extractEmails(dataEmail);
-        extracted.forEach(e => {
-          emails.add(e);
-          console.log(`        📧 Found email in data attribute: ${e}`);
-        });
-      }
-    });
-    
+
     // Priority: Prefer business emails over generic
     const priorityEmails = [];
     const genericEmails = [];
-    
     emails.forEach(email => {
       let isGeneric = false;
       for (const pattern of EMAIL_PATTERNS) {
@@ -233,26 +172,23 @@ async function findEmailOnPage(url) {
           break;
         }
       }
-      
       if (isGeneric) {
         genericEmails.push(email);
       } else {
         priorityEmails.push(email);
       }
     });
-    
-    // Return priority emails first, then generic
+
     const allEmails = [...priorityEmails, ...genericEmails];
     console.log(`      Found ${allEmails.length} total emails on page`);
     return allEmails.length > 0 ? allEmails[0] : null;
-    
   } catch (error) {
     console.log(`      ❌ Error fetching ${url}: ${error.message}`);
     return null;
   }
 }
 
-// Helper: Find contact pages (expanded)
+// Helper: Find contact pages
 async function findContactLinks(baseUrl) {
   try {
     console.log(`      🔍 Looking for contact pages on ${baseUrl}`);
@@ -261,29 +197,21 @@ async function findContactLinks(baseUrl) {
       headers: HEADERS,
       maxRedirects: 5
     });
-    
     if (response.status !== 200) {
       console.log(`      ⚠️ Status ${response.status} for ${baseUrl}`);
       return [];
     }
-    
     const $ = cheerio.load(response.data);
     const links = [];
     const seenUrls = new Set();
-    
-    // Find all links
     $('a[href]').each((i, el) => {
       const href = $(el).attr('href');
       if (!href) return;
-      
       const hrefLower = href.toLowerCase();
       const text = $(el).text().toLowerCase();
-      
-      // Check if it's a contact-related link
       const isContact = CONTACT_PATHS.some(path => 
         hrefLower.includes(path) || text.includes(path)
       );
-      
       if (isContact) {
         try {
           const fullUrl = new URL(href, baseUrl).toString();
@@ -292,12 +220,9 @@ async function findContactLinks(baseUrl) {
             links.push(fullUrl);
             console.log(`        Found contact page: ${fullUrl}`);
           }
-        } catch (e) {
-          // Invalid URL, skip
-        }
+        } catch (e) { /* Invalid URL, skip */ }
       }
     });
-    
     console.log(`      Found ${links.length} contact pages`);
     return links.slice(0, 5);
   } catch (error) {
@@ -306,32 +231,24 @@ async function findContactLinks(baseUrl) {
   }
 }
 
-// Helper: Find email for business with aggressive strategy
+// Helper: Find email for business
 async function findEmailForBusiness(website) {
   if (!website) return '';
-  
   console.log(`  📧 Searching for email on: ${website}`);
-  
-  // Try main page first
   let email = await findEmailOnPage(website);
   if (email) {
     console.log(`    ✅ Found email on main page: ${email}`);
     return email;
   }
-  
-  // Try contact pages
   console.log(`    🔍 No email on main page, checking contact pages...`);
   const contactLinks = await findContactLinks(website);
-  
   for (const link of contactLinks) {
-    console.log(`      📄 Checking contact page: ${link}`);
     email = await findEmailOnPage(link);
     if (email) {
       console.log(`    ✅ Found email on contact page: ${email}`);
       return email;
     }
   }
-  
   console.log(`    ❌ No email found anywhere on ${website}`);
   return '';
 }
@@ -343,7 +260,6 @@ async function getPlaceDetails(placeId, apiKey) {
     fields: 'name,formatted_address,formatted_phone_number,international_phone_number,website,rating,user_ratings_total,url,types',
     key: apiKey
   };
-  
   console.log(`  📋 Fetching details for place ID: ${placeId}`);
   const response = await axios.get(DETAILS_URL, { params, timeout: 30000 });
   const result = response.data.result || {};
@@ -352,7 +268,39 @@ async function getPlaceDetails(placeId, apiKey) {
   return result;
 }
 
-// Helper: Collect places via text search with multiple formats
+// Helper: Generate expanded search locations
+function generateSearchLocations(mainLocation, subAreas, maxLocations = 25) {
+  const locations = [];
+  
+  // Add main location
+  locations.push(mainLocation);
+  
+  // Add sub-areas
+  if (subAreas && subAreas.trim()) {
+    const areas = subAreas.split(',').map(s => s.trim()).filter(Boolean);
+    locations.push(...areas);
+  }
+  
+  // If we need more locations, add variations
+  if (locations.length < maxLocations) {
+    const variations = [
+      `${mainLocation} area`,
+      `${mainLocation} suburbs`,
+      `${mainLocation} metro`,
+      `Greater ${mainLocation}`
+    ];
+    for (const varLoc of variations) {
+      if (locations.length >= maxLocations) break;
+      if (!locations.includes(varLoc)) {
+        locations.push(varLoc);
+      }
+    }
+  }
+  
+  return locations.slice(0, maxLocations);
+}
+
+// Helper: Collect places with improved pagination
 async function collectPlaces(query, location, apiKey, maxResults) {
   console.log(`\n📥 Starting search: "${query}" in "${location}"`);
   console.log(`   Max results: ${maxResults}`);
@@ -370,17 +318,19 @@ async function collectPlaces(query, location, apiKey, maxResults) {
   ];
   
   let currentFormatIndex = 0;
+  let consecutiveFailures = 0;
   let totalAttempts = 0;
   
   while (results.length < maxResults && currentFormatIndex < queryFormats.length) {
     const params = { key: apiKey };
+    
     if (pageToken) {
       params.pagetoken = pageToken;
-      console.log(`  📄 Fetching next page with token: ${pageToken.substring(0, 20)}...`);
+      console.log(`  📄 Fetching next page (attempt ${consecutiveFailures + 1})...`);
     } else {
-      // Try the next format
       params.query = queryFormats[currentFormatIndex];
       console.log(`  🔍 Trying format ${currentFormatIndex + 1}: "${params.query}"`);
+      consecutiveFailures = 0;
     }
     
     totalAttempts++;
@@ -397,7 +347,6 @@ async function collectPlaces(query, location, apiKey, maxResults) {
       console.log(`  📥 Response status: ${status}`);
       
       if (status === 'OK') {
-        // Success! Process results
         const items = data.results || [];
         console.log(`  ✅ Found ${items.length} results on this page`);
         
@@ -413,27 +362,46 @@ async function collectPlaces(query, location, apiKey, maxResults) {
         }
         console.log(`  📊 Added ${newItems} new businesses (total: ${results.length})`);
         
-        pageToken = data.next_page_token;
-        if (!pageToken) {
-          console.log(`  📄 No more pages, trying next format...`);
+        // Handle pagination
+        if (data.next_page_token && results.length < maxResults) {
+          console.log(`  📄 Next page token received, waiting 3 seconds...`);
+          // Wait at least 3 seconds for token to activate
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          pageToken = data.next_page_token;
+          consecutiveFailures = 0;
+        } else {
+          console.log(`  📄 No more pages for this format`);
           currentFormatIndex++;
           pageToken = null;
-          continue;
+          consecutiveFailures = 0;
         }
-        
-        console.log(`  📄 Next page token received: ${pageToken.substring(0, 20)}...`);
-        // Wait for token to become valid
-        await new Promise(resolve => setTimeout(resolve, 2200));
         
       } else if (status === 'ZERO_RESULTS') {
         console.log(`  ⚠️ No results found for format: "${params.query}"`);
         currentFormatIndex++;
         pageToken = null;
+        consecutiveFailures = 0;
       } else {
         console.log(`  ❌ Format "${params.query}" failed with status: ${status}`);
         console.log(`     Error message: ${data.error_message || 'No error message'}`);
-        currentFormatIndex++;
-        pageToken = null;
+        
+        if (pageToken) {
+          consecutiveFailures++;
+          console.log(`  ⚠️ Page token failure #${consecutiveFailures}`);
+          if (consecutiveFailures >= 2) {
+            console.log(`  ⏭️ Skipping to next format after multiple failures`);
+            currentFormatIndex++;
+            pageToken = null;
+            consecutiveFailures = 0;
+          } else {
+            console.log(`  ⏳ Waiting 5 seconds and retrying token...`);
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+        } else {
+          currentFormatIndex++;
+          pageToken = null;
+          consecutiveFailures = 0;
+        }
       }
     } catch (error) {
       console.log(`  ❌ Request failed: ${error.message}`);
@@ -441,8 +409,18 @@ async function collectPlaces(query, location, apiKey, maxResults) {
         console.log(`     Response status: ${error.response.status}`);
         console.log(`     Response data: ${JSON.stringify(error.response.data, null, 2)}`);
       }
-      currentFormatIndex++;
-      pageToken = null;
+      if (pageToken) {
+        consecutiveFailures++;
+        if (consecutiveFailures >= 2) {
+          currentFormatIndex++;
+          pageToken = null;
+          consecutiveFailures = 0;
+        }
+      } else {
+        currentFormatIndex++;
+        pageToken = null;
+        consecutiveFailures = 0;
+      }
     }
   }
   
@@ -473,7 +451,6 @@ module.exports = async (req, res) => {
   
   try {
     const API_KEY = process.env.GOOGLE_PLACES_API_KEY;
-    
     console.log(`🔑 API Key present: ${API_KEY ? 'Yes (starts with ' + API_KEY.substring(0, 8) + '...)' : 'No'}`);
     
     if (!API_KEY) {
@@ -505,35 +482,31 @@ module.exports = async (req, res) => {
       });
     }
     
-    // Clean and validate location format
     const cleanLocation = location.trim();
     console.log(`📍 Clean location: "${cleanLocation}"`);
     
-    let areas = [cleanLocation];
-    if (subAreas && subAreas.trim()) {
-      const extraAreas = subAreas.split(',').map(s => s.trim()).filter(Boolean);
-      areas = [cleanLocation, ...extraAreas];
-      console.log(`📍 Search areas: ${areas.join(', ')}`);
-    } else {
-      console.log(`📍 Searching only main location: ${cleanLocation}`);
-    }
+    // Generate expanded search locations
+    const searchLocations = generateSearchLocations(cleanLocation, subAreas, 25);
+    console.log(`📍 Generated ${searchLocations.length} search locations`);
+    console.log(`   ${searchLocations.join(', ')}`);
     
     const maxResultsNum = Math.min(parseInt(maxResults) || 100, 2000);
-    
-    console.log(`🎯 Target: ${maxResultsNum} businesses`);
+    console.log(`🎯 Target: ${maxResultsNum} businesses total`);
     console.log(`📧 Email lookup: ${skipEmails ? 'SKIPPED' : 'ENABLED (AGGRESSIVE)'}`);
     
-    // Collect all places
+    // Collect all places from multiple locations
     const allPlaces = [];
     const seenIds = new Set();
+    const perLocationCap = Math.max(1, Math.ceil(maxResultsNum / searchLocations.length));
     
-    for (const area of areas) {
+    for (const area of searchLocations) {
       if (allPlaces.length >= maxResultsNum) break;
       
-      const perAreaCap = Math.min(maxResultsNum - allPlaces.length, 60);
-      console.log(`\n🔍 Searching in "${area}" (cap: ${perAreaCap})...`);
+      const remaining = maxResultsNum - allPlaces.length;
+      const cap = Math.min(perLocationCap, remaining, 60);
+      console.log(`\n🔍 Searching in "${area}" (cap: ${cap})...`);
       
-      const found = await collectPlaces(query, area, API_KEY, perAreaCap);
+      const found = await collectPlaces(query, area, API_KEY, cap);
       const newPlaces = found.filter(p => !seenIds.has(p.place_id));
       newPlaces.forEach(p => seenIds.add(p.place_id));
       allPlaces.push(...newPlaces);
@@ -571,7 +544,6 @@ module.exports = async (req, res) => {
       console.log(`\n🔍 [${i+1}/${total}] Processing business...`);
       
       const details = await getPlaceDetails(place.place_id, API_KEY);
-      
       await new Promise(resolve => setTimeout(resolve, 50));
       
       const website = details.website || '';
@@ -612,11 +584,10 @@ module.exports = async (req, res) => {
       }
     }
     
-    // Create Excel file with email emphasis
+    // Create Excel file
     console.log('\n📁 Creating Excel file...');
     const wb = XLSX.utils.book_new();
     
-    // Main sheet with all data
     const wsData = [
       ['Name', 'Email', 'Phone', 'Website', 'Category', 'Address', 'Rating', 'Review Count', 'Google Maps Link'],
       ...rows.map(r => [r.name, r.email, r.phone, r.website, r.category, r.address, r.rating, r.reviewCount, r.mapsLink])
@@ -625,7 +596,6 @@ module.exports = async (req, res) => {
     const ws = XLSX.utils.aoa_to_sheet(wsData);
     XLSX.utils.book_append_sheet(wb, ws, 'All Leads');
     
-    // Create separate sheet for emails only
     const emailRows = rows.filter(r => r.email);
     if (emailRows.length > 0) {
       console.log(`📧 Creating emails-only sheet with ${emailRows.length} entries`);
