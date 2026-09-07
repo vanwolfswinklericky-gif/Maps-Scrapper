@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Google Maps Lead Scraper</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 700px;
+            width: 100%;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        h1 {
+            color: #333;
+            font-size: 28px;
+            margin-bottom: 8px;
+        }
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+        .form-group {
+            margin-bottom: 20px;
+        }
+        label {
+            display: block;
+            font-weight: 600;
+            color: #555;
+            margin-bottom: 6px;
+            font-size: 14px;
+        }
+        input, select {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            font-size: 15px;
+            transition: border-color 0.3s;
+        }
+        input:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        input::placeholder {
+            color: #aaa;
+        }
+        .row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .checkbox-group input[type="checkbox"] {
+            width: auto;
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+        }
+        .checkbox-group label {
+            margin-bottom: 0;
+            cursor: pointer;
+        }
+        button {
+            width: 100%;
+            padding: 14px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 17px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        button:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+        }
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        #status {
+            margin-top: 20px;
+            padding: 15px;
+            border-radius: 10px;
+            display: none;
+        }
+        #status.info {
+            display: block;
+            background: #e3f2fd;
+            color: #0d47a1;
+            border: 1px solid #90caf9;
+        }
+        #status.success {
+            display: block;
+            background: #e8f5e9;
+            color: #1b5e20;
+            border: 1px solid #81c784;
+        }
+        #status.error {
+            display: block;
+            background: #ffebee;
+            color: #b71c1c;
+            border: 1px solid #ef9a9a;
+        }
+        #progress {
+            margin-top: 20px;
+            display: none;
+        }
+        #progress.active {
+            display: block;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #e0e0e0;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+        .progress-bar .fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea, #764ba2);
+            width: 0%;
+            transition: width 0.5s;
+            border-radius: 4px;
+        }
+        .download-btn {
+            margin-top: 15px;
+            padding: 12px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 10px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.3s;
+            width: 100%;
+        }
+        .download-btn:hover {
+            background: #388E3C;
+        }
+        .info-box {
+            background: #f5f5f5;
+            border-radius: 10px;
+            padding: 15px;
+            margin-bottom: 20px;
+            font-size: 13px;
+            color: #555;
+            border-left: 4px solid #667eea;
+        }
+        .info-box strong {
+            color: #333;
+        }
+        @media (max-width: 600px) {
+            .container { padding: 25px; }
+            .row { grid-template-columns: 1fr; }
+            h1 { font-size: 24px; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📍 Lead Scraper</h1>
+        <p class="subtitle">Extract business leads from Google Maps with contact emails</p>
+        
+        <div class="info-box">
+            <strong>⚠️ Important:</strong> Each run searches across multiple areas to get more results. 
+            The API key must have billing enabled. Results are limited to <strong>500</strong> per run on Vercel.
+        </div>
+        
+        <form id="scrapeForm">
+            <div class="form-group">
+                <label for="query">Business Type *</label>
+                <input type="text" id="query" placeholder="e.g., skincare clinic, restaurant, cafe" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="location">Main Location *</label>
+                <input type="text" id="location" placeholder="e.g., Lagos, Nigeria" required>
+            </div>
+            
+            <div class="form-group">
+                <label for="extraAreas">Extra Sub-Areas (comma separated)</label>
+                <input type="text" id="extraAreas" placeholder="e.g., Ikeja, Lekki, Victoria Island">
+            </div>
+            
+            <div class="form-group">
+                <label for="apiKey">Google Places API Key *</label>
+                <input type="password" id="apiKey" placeholder="Enter your API key" required>
+            </div>
+            
+            <div class="row">
+                <div class="form-group">
+                    <label for="maxResults">Max Results</label>
+                    <input type="number" id="maxResults" value="100" min="10" max="500">
+                </div>
+                <div class="form-group checkbox-group" style="display:flex; align-items:center; padding-top: 30px;">
+                    <input type="checkbox" id="skipEmails">
+                    <label for="skipEmails">Skip email lookup (faster)</label>
+                </div>
+            </div>
+            
+            <button type="submit" id="scrapeBtn">🚀 Start Scraping</button>
+        </form>
+        
+        <div id="status"></div>
+        
+        <div id="progress">
+            <p id="progressText">Processing...</p>
+            <div class="progress-bar">
+                <div class="fill" id="progressFill"></div>
+            </div>
+            <button class="download-btn" id="downloadBtn" style="display:none;">📥 Download Excel File</button>
+        </div>
+    </div>
+
+    <script>
+        let excelData = null;
+        let isRunning = false;
+        
+        const form = document.getElementById('scrapeForm');
+        const statusEl = document.getElementById('status');
+        const progressEl = document.getElementById('progress');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        const scrapeBtn = document.getElementById('scrapeBtn');
+        const downloadBtn = document.getElementById('downloadBtn');
+        
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            if (isRunning) return;
+            
+            const query = document.getElementById('query').value.trim();
+            const location = document.getElementById('location').value.trim();
+            const extraAreas = document.getElementById('extraAreas').value.trim();
+            const apiKey = document.getElementById('apiKey').value.trim();
+            const maxResults = parseInt(document.getElementById('maxResults').value) || 100;
+            const skipEmails = document.getElementById('skipEmails').checked;
+            
+            if (!query || !location || !apiKey) {
+                showStatus('Please fill in all required fields.', 'error');
+                return;
+            }
+            
+            if (maxResults < 1 || maxResults > 500) {
+                showStatus('Max results must be between 1 and 500.', 'error');
+                return;
+            }
+            
+            // Show progress
+            isRunning = true;
+            scrapeBtn.disabled = true;
+            scrapeBtn.textContent = '⏳ Scraping...';
+            showStatus('', '');
+            progressEl.classList.add('active');
+            progressFill.style.width = '0%';
+            progressText.textContent = 'Starting scrape...';
+            downloadBtn.style.display = 'none';
+            excelData = null;
+            
+            // Simulate progress
+            let progressValue = 0;
+            const progressInterval = setInterval(() => {
+                progressValue += Math.random() * 5 + 1;
+                if (progressValue > 95) progressValue = 95;
+                progressFill.style.width = progressValue + '%';
+                progressText.textContent = `Scraping in progress... ${Math.round(progressValue)}%`;
+            }, 500);
+            
+            try {
+                const response = await fetch('/api/scrape', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                        query, location, apiKey, maxResults, extraAreas, skipEmails 
+                    })
+                });
+                
+                clearInterval(progressInterval);
+                progressFill.style.width = '100%';
+                progressText.textContent = 'Processing results...';
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Something went wrong');
+                }
+                
+                // Store Excel data
+                excelData = data.excel;
+                
+                // Show success
+                showStatus(
+                    `✅ ${data.message}`,
+                    'success'
+                );
+                
+                progressText.textContent = `Complete! Found ${data.total} businesses, ${data.emailsFound} emails.`;
+                downloadBtn.style.display = 'block';
+                
+            } catch (error) {
+                clearInterval(progressInterval);
+                showStatus(`❌ Error: ${error.message}`, 'error');
+                progressEl.classList.remove('active');
+            } finally {
+                isRunning = false;
+                scrapeBtn.disabled = false;
+                scrapeBtn.textContent = '🚀 Start Scraping';
+            }
+        });
+        
+        downloadBtn.addEventListener('click', () => {
+            if (!excelData) return;
+            
+            try {
+                const binary = atob(excelData);
+                const bytes = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) {
+                    bytes[i] = binary.charCodeAt(i);
+                }
+                const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `leads_${new Date().toISOString().slice(0,10)}.xlsx`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+            } catch (error) {
+                showStatus('Error downloading file: ' + error.message, 'error');
+            }
+        });
+        
+        function showStatus(message, type) {
+            statusEl.textContent = message;
+            statusEl.className = type;
+            if (!message) {
+                statusEl.style.display = 'none';
+            } else {
+                statusEl.style.display = 'block';
+            }
+        }
+    </script>
+</body>
+</html>
