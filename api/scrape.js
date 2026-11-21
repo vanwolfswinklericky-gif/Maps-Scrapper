@@ -3,17 +3,13 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const XLSX = require('xlsx');
 
-// ==================== CONSTANTS ====================
-const TEXT_SEARCH_URL = "https://maps.googleapis.com/maps/api/place/textsearch/json";
-const DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json";
+// ==================== NEW API CONSTANTS ====================
+const TEXT_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText';
+const DETAILS_URL_BASE = 'https://places.googleapis.com/v1/places/';
 
 // ==================== EMAIL REGEX ====================
 const EMAIL_REGEX = /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,24}\b/g;
 const EMAIL_REGEX_STRICT = /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.(com|org|net|edu|gov|co|uk|ng|io|ai|me|us|ca|au|de|fr|es|it|br|in|jp|cn|ru|za|mx|nl|se|no|fi|dk|ch|at|be|pl|cz|gr|pt|ie|nz|sg|hk|my|ph|vn|th|id|tr|il|ae|sa|eg|ke|gh)\b/gi;
-const OBFUSCATED_REGEXES = [
-  /([a-zA-Z0-9._%+\-]+)\s*(?:\[at\]|\(at\)|\{at\}|\bat\b)\s*([a-zA-Z0-9.\-]+)\s*(?:\[dot\]|\(dot\)|\{dot\}|\bdot\b)\s*([a-zA-Z]{2,24})/gi,
-  /([a-zA-Z0-9._%+\-]+)\s*@\s*([a-zA-Z0-9.\-]+)\s*\.\s*([a-zA-Z]{2,24})/g
-];
 
 // ==================== BLOCKLIST ====================
 const EMAIL_BLOCKLIST = [
@@ -72,53 +68,42 @@ const CONFIG = {
   SITEMAP_CHECK: true,
   USE_GOOGLE_SEARCH_FALLBACK: true,
   GOOGLE_SEARCH_URL: 'https://www.google.com/search',
-  CONCURRENCY_FOR_SITES: 4
+  CONCURRENCY_FOR_SITES: 4,
+  // New API requires explicit field masks [citation:1][citation:5]
+  TEXT_SEARCH_FIELDS: 'places.id,places.displayName,places.formattedAddress,places.websiteUri,places.nationalPhoneNumber,places.rating,places.userRatingCount,places.types,places.googleMapsUri',
+  DETAILS_FIELDS: 'id,displayName,formattedAddress,websiteUri,nationalPhoneNumber,rating,userRatingCount,types,googleMapsUri'
 };
 
 // ==================== EMAIL HELPERS ====================
 function normalizeEmail(raw) {
   if (!raw) return '';
-  let e = raw
-    .replace(/^mailto:/i, '')
-    .replace(/^email:/i, '')
-    .replace(/^e-mail:/i, '')
-    .replace(/\?subject=.*$/i, '')
-    .replace(/\?body=.*$/i, '')
+  return raw
+    .replace(/^mailto:/i, '').replace(/^email:/i, '').replace(/^e-mail:/i, '')
+    .replace(/\?subject=.*$/i, '').replace(/\?body=.*$/i, '')
     .replace(/^["'<(\[]+|["'>)\]]+$/g, '')
-    .trim()
-    .toLowerCase();
-  e = e.replace(/[.,;:!?]+$/, '');
-  return e;
+    .trim().toLowerCase()
+    .replace(/[.,;:!?]+$/, '');
 }
 
 function isValidEmail(email) {
   if (!email || typeof email !== 'string') return false;
   const lower = email.toLowerCase().trim();
   if (lower.length < 6 || lower.length > 254) return false;
-
-  for (const bad of EMAIL_BLOCKLIST) {
-    if (lower.includes(bad.toLowerCase())) return false;
-  }
-
+  for (const bad of EMAIL_BLOCKLIST) if (lower.includes(bad.toLowerCase())) return false;
   const parts = lower.split('@');
   if (parts.length !== 2) return false;
   const [local, domain] = parts;
-  if (!local || !domain) return false;
-  if (local.length > 64) return false;
-  if (!domain.includes('.')) return false;
+  if (!local || !domain || local.length > 64 || !domain.includes('.')) return false;
   const tld = domain.split('.').pop();
   if (!tld || tld.length < 2 || !/^[a-z]+$/i.test(tld)) return false;
   if (domain.startsWith('.') || domain.endsWith('.')) return false;
   if (/^[0-9a-f]{16,}$/i.test(local)) return false;
-
   return true;
 }
 
 function scoreEmail(email) {
   let score = 0;
-  for (const { re, weight } of EMAIL_PRIORITY) {
-    if (re.test(email)) { score += weight; break; }
-  }
+  for (const { re, weight } of EMAIL_PRIORITY) if (re.test(email)) { score += weight; break; }
   const local = email.split('@')[0];
   if (local.length <= 12) score += 2;
   if (!/\d{3,}/.test(local)) score += 1;
@@ -126,20 +111,9 @@ function scoreEmail(email) {
 }
 
 // ==================== EMAIL EXTRACTION ====================
-function deobfuscate(text) {
-  return text
-    .replace(/\s*\[at\]\s*/gi, '@')
-    .replace(/\s*\(at\)\s*/gi, '@')
-    .replace(/\s*\{at\}\s*/gi, '@')
-    .replace(/\s*\[dot\]\s*/gi, '.')
-    .replace(/\s*\(dot\)\s*/gi, '.')
-    .replace(/\s*\{dot\}\s*/gi, '.');
-}
-
 function extractEmails(text) {
   if (!text || typeof text !== 'string') return [];
   const found = new Set();
-
   for (const m of text.match(EMAIL_REGEX_STRICT) || []) {
     const e = normalizeEmail(m);
     if (isValidEmail(e)) found.add(e);
@@ -147,15 +121,6 @@ function extractEmails(text) {
   for (const m of text.match(EMAIL_REGEX) || []) {
     const e = normalizeEmail(m);
     if (isValidEmail(e)) found.add(e);
-  }
-  const deob = deobfuscate(text);
-  for (const re of OBFUSCATED_REGEXES) {
-    let m;
-    re.lastIndex = 0;
-    while ((m = re.exec(deob)) !== null) {
-      const candidate = normalizeEmail(`${m[1]}@${m[2]}.${m[3]}`);
-      if (isValidEmail(candidate)) found.add(candidate);
-    }
   }
   return Array.from(found);
 }
@@ -171,86 +136,43 @@ async function fetchHtml(url) {
       maxContentLength: 5 * 1024 * 1024
     });
     const ct = (response.headers['content-type'] || '').toLowerCase();
-    if (!ct.includes('html') && !ct.includes('xml') && !ct.includes('text')) {
-      return null;
-    }
+    if (!ct.includes('html') && !ct.includes('xml') && !ct.includes('text')) return null;
     return { url: response.request?.res?.responseUrl || url, html: response.data };
-  } catch (err) {
-    return null;
-  }
+  } catch (_) { return null; }
 }
 
 // ==================== PAGE PARSING ====================
 function parseEmailsFromHtml(html, baseUrl) {
   const $ = cheerio.load(html);
   const emails = new Set();
-
   $('script[src], style, noscript, iframe, svg').remove();
 
   $('a[href^="mailto:" i]').each((_, el) => {
-    const href = $(el).attr('href') || '';
-    for (const e of extractEmails(href)) emails.add(e);
+    for (const e of extractEmails($(el).attr('href') || '')) emails.add(e);
   });
-
   $('a[href]').each((_, el) => {
     const href = $(el).attr('href') || '';
-    if (/mailto/i.test(href)) {
-      for (const e of extractEmails(href)) emails.add(e);
-    }
+    if (/mailto/i.test(href)) for (const e of extractEmails(href)) emails.add(e);
     if (/%40|mailto/i.test(href)) {
-      try {
-        for (const e of extractEmails(decodeURIComponent(href))) emails.add(e);
-      } catch (_) {}
+      try { for (const e of extractEmails(decodeURIComponent(href))) emails.add(e); } catch (_) {}
     }
   });
-
-  const bodyText = $('body').text() + '\n' + ($('title').text() || '');
-  for (const e of extractEmails(bodyText)) emails.add(e);
-
-  const selectors = [
-    '[class*="email" i]', '[id*="email" i]', '[class*="mail" i]', '[id*="mail" i]',
-    '[class*="contact" i]', '[id*="contact" i]', '[itemprop="email"]',
-    'footer', 'address', '.footer', '#footer', '[class*="footer" i]',
-    '[class*="vcard" i]', '[class*="business" i]'
-  ];
-  for (const sel of selectors) {
-    $(sel).each((_, el) => {
-      const t = $(el).text();
-      for (const e of extractEmails(t)) emails.add(e);
-    });
+  for (const e of extractEmails($('body').text())) emails.add(e);
+  for (const sel of ['[class*="email" i]', '[id*="email" i]', '[class*="contact" i]', 'footer', 'address']) {
+    $(sel).each((_, el) => { for (const e of extractEmails($(el).text())) emails.add(e); });
   }
-
   $('script[type="application/ld+json"]').each((_, el) => {
-    const raw = $(el).html() || '';
-    for (const e of extractEmails(raw)) emails.add(e);
+    for (const e of extractEmails($(el).html() || '')) emails.add(e);
   });
-
   $('meta[content], [data-email], [data-mail]').each((_, el) => {
-    const candidates = [
-      $(el).attr('content'),
-      $(el).attr('data-email'),
-      $(el).attr('data-mail'),
-      $(el).attr('data-contact')
-    ].filter(Boolean);
-    for (const c of candidates) {
+    for (const c of [$(el).attr('content'), $(el).attr('data-email'), $(el).attr('data-mail')].filter(Boolean)) {
       for (const e of extractEmails(c)) emails.add(e);
     }
   });
-
   $('script:not([src])').each((_, el) => {
-    const raw = $(el).html() || '';
-    const decoded = raw
-      .replace(/\\u0040/g, '@')
-      .replace(/&#64;/g, '@')
-      .replace(/&commat;/g, '@')
-      .replace(/%40/g, '@');
-    for (const e of extractEmails(decoded)) {
-      if (!/\.(png|jpg|jpeg|gif|svg|webp|css|js|ico)$/i.test(e.split('@')[1] || '')) {
-        emails.add(e);
-      }
-    }
+    const decoded = ($(el).html() || '').replace(/\\u0040/g, '@').replace(/&#64;/g, '@').replace(/%40/g, '@');
+    for (const e of extractEmails(decoded)) if (!/\.(png|jpg|css|js|ico)$/i.test(e.split('@')[1] || '')) emails.add(e);
   });
-
   return Array.from(emails);
 }
 
@@ -258,122 +180,63 @@ function parseEmailsFromHtml(html, baseUrl) {
 function findContactLinks(html, baseUrl) {
   try {
     const $ = cheerio.load(html);
-    const links = [];
-    const seen = new Set();
+    const links = [], seen = new Set();
     const baseHost = new URL(baseUrl).hostname.replace(/^www\./, '');
-
     $('a[href]').each((_, el) => {
       const href = $(el).attr('href');
-      if (!href) return;
-      const text = ($(el).text() || '').toLowerCase().trim();
-      const hrefLower = href.toLowerCase();
-
-      const isContact =
-        CONTACT_PATHS.some(p => hrefLower.includes(p)) ||
-        CONTACT_PATHS.some(p => text.includes(p)) ||
-        /contact|about|reach|touch|team/i.test(text);
-
-      if (!isContact) return;
-      if (/^(mailto:|tel:|javascript:|#)/i.test(href)) return;
-
+      if (!href || /^(mailto:|tel:|javascript:|#)/i.test(href)) return;
+      const text = ($(el).text() || '').toLowerCase();
+      if (!CONTACT_PATHS.some(p => href.toLowerCase().includes(p) || text.includes(p))) return;
       try {
         const full = new URL(href, baseUrl).toString();
-        const linkHost = new URL(full).hostname.replace(/^www\./, '');
-        if (linkHost !== baseHost) return;
-        if (!seen.has(full)) {
-          seen.add(full);
-          links.push(full);
-        }
+        if (new URL(full).hostname.replace(/^www\./, '') !== baseHost) return;
+        if (!seen.has(full)) { seen.add(full); links.push(full); }
       } catch (_) {}
     });
-
     return links.slice(0, CONFIG.MAX_CONTACT_PAGES);
-  } catch (_) {
-    return [];
-  }
+  } catch (_) { return []; }
 }
 
 async function fetchSitemapContactUrls(baseUrl) {
   if (!CONFIG.SITEMAP_CHECK) return [];
   try {
-    const sitemapUrl = new URL('/sitemap.xml', baseUrl).toString();
-    const res = await fetchHtml(sitemapUrl);
-    if (!res) return [];
-    const urls = [];
-    const raw = typeof res.html === 'string' ? res.html : '';
-    const urlMatches = raw.match(/<loc>([^<]+)<\/loc>/gi) || [];
-    for (const m of urlMatches) {
-      const u = m.replace(/<\/?loc>/gi, '').trim();
-      if (CONTACT_PATHS.some(p => u.toLowerCase().includes(p))) urls.push(u);
-    }
-    return urls.slice(0, 3);
-  } catch (_) {
-    return [];
-  }
+    const res = await fetchHtml(new URL('/sitemap.xml', baseUrl).toString());
+    if (!res || typeof res.html !== 'string') return [];
+    return (res.html.match(/<loc>([^<]+)<\/loc>/gi) || [])
+      .map(m => m.replace(/<\/?loc>/gi, '').trim())
+      .filter(u => CONTACT_PATHS.some(p => u.toLowerCase().includes(p)))
+      .slice(0, 3);
+  } catch (_) { return []; }
 }
 
 // ==================== WEBSITE EMAIL FINDER ====================
 async function findEmailsForWebsite(website) {
   const result = { emails: [], pagesTried: 0, emailSource: null };
   if (!website) return result;
-
   let startUrl;
-  try {
-    startUrl = new URL(website.startsWith('http') ? website : `http://${website}`).toString();
-  } catch (_) {
-    return result;
-  }
+  try { startUrl = new URL(website.startsWith('http') ? website : `http://${website}`).toString(); }
+  catch (_) { return result; }
 
-  const visited = new Set();
-  const queue = [startUrl];
-  const allEmails = new Map();
-
+  const visited = new Set(), queue = [startUrl], allEmails = new Map();
   while (queue.length && result.pagesTried < CONFIG.MAX_TOTAL_PAGES_PER_SITE && allEmails.size < CONFIG.MAX_EMAILS_PER_SITE) {
     const url = queue.shift();
     if (!url || visited.has(url)) continue;
-    visited.add(url);
-    result.pagesTried++;
-
+    visited.add(url); result.pagesTried++;
     const page = await fetchHtml(url);
     if (!page) continue;
-
-    const pageEmails = parseEmailsFromHtml(page.html, page.url || url);
-    for (const e of pageEmails) {
-      if (!allEmails.has(e)) {
-        allEmails.set(e, { score: scoreEmail(e), source: page.url || url });
-      }
+    for (const e of parseEmailsFromHtml(page.html, page.url || url)) {
+      if (!allEmails.has(e)) allEmails.set(e, { score: scoreEmail(e), source: page.url || url });
     }
-
-    if (allEmails.size > 0) {
-      const best = Math.max(...Array.from(allEmails.values()).map(v => v.score));
-      if (best >= 10) break;
-    }
-
+    if (allEmails.size > 0 && Math.max(...Array.from(allEmails.values()).map(v => v.score)) >= 10) break;
     if (url === startUrl || visited.size === 1) {
-      const contactLinks = findContactLinks(page.html, page.url || url);
-      for (const l of contactLinks) {
-        if (!visited.has(l) && !queue.includes(l)) queue.push(l);
-      }
-      if (allEmails.size === 0) {
-        const sitemapLinks = await fetchSitemapContactUrls(page.url || url);
-        for (const l of sitemapLinks) {
-          if (!visited.has(l) && !queue.includes(l)) queue.push(l);
-        }
-      }
+      for (const l of findContactLinks(page.html, page.url || url)) if (!visited.has(l) && !queue.includes(l)) queue.push(l);
+      if (allEmails.size === 0) for (const l of await fetchSitemapContactUrls(page.url || url)) if (!visited.has(l) && !queue.includes(l)) queue.push(l);
     }
-
-    if (result.pagesTried < CONFIG.MAX_TOTAL_PAGES_PER_SITE) {
-      await new Promise(r => setTimeout(r, CONFIG.INTER_REQUEST_DELAY_MS));
-    }
+    if (result.pagesTried < CONFIG.MAX_TOTAL_PAGES_PER_SITE) await new Promise(r => setTimeout(r, CONFIG.INTER_REQUEST_DELAY_MS));
   }
-
-  const sorted = Array.from(allEmails.entries())
-    .sort((a, b) => b[1].score - a[1].score)
-    .slice(0, CONFIG.MAX_EMAILS_PER_SITE)
-    .map(([email, meta]) => ({ email, ...meta }));
-
-  result.emails = sorted.map(s => s.email);
-  if (sorted.length) result.emailSource = sorted[0].source;
+  const sorted = Array.from(allEmails.entries()).sort((a, b) => b[1].score - a[1].score).slice(0, CONFIG.MAX_EMAILS_PER_SITE);
+  result.emails = sorted.map(s => s[0]);
+  if (sorted.length) result.emailSource = sorted[0][1].source;
   return result;
 }
 
@@ -383,149 +246,125 @@ async function googleSearchForWebsite(businessName, address) {
   try {
     const q = encodeURIComponent(`${businessName} ${address} official website`);
     const res = await axios.get(`${CONFIG.GOOGLE_SEARCH_URL}?q=${q}`, {
-      timeout: CONFIG.FETCH_TIMEOUT_MS,
-      headers: HEADERS,
-      maxRedirects: 3,
-      validateStatus: () => true
+      timeout: CONFIG.FETCH_TIMEOUT_MS, headers: HEADERS, maxRedirects: 3, validateStatus: () => true
     });
     const $ = cheerio.load(res.data);
-    const links = [];
-    $('a[href^="/url?q="]').each((_, el) => {
-      const href = $(el).attr('href') || '';
-      const m = href.match(/\/url\?q=([^&]+)/);
+    for (const el of $('a[href^="/url?q="]').toArray()) {
+      const m = ($(el).attr('href') || '').match(/\/url\?q=([^&]+)/);
       if (m) {
         try {
           const u = decodeURIComponent(m[1]);
-          if (!/google\.|youtube\.|facebook\.|instagram\.|twitter\.|linkedin\.|yelp\.|tripadvisor\.|wikipedia\./i.test(u)) {
-            links.push(u);
-          }
+          if (!/google\.|youtube\.|facebook\.|instagram\.|twitter\.|linkedin\.|yelp\.|tripadvisor\.|wikipedia\./i.test(u)) return u;
         } catch (_) {}
       }
-    });
-    return links[0] || null;
-  } catch (_) {
-    return null;
-  }
+    }
+  } catch (_) {}
+  return null;
 }
 
-// ==================== GOOGLE PLACES ====================
+// ==================== NEW PLACE DETAILS ====================
 async function getPlaceDetails(placeId, apiKey) {
-  const params = {
-    place_id: placeId,
-    fields: 'name,formatted_address,formatted_phone_number,international_phone_number,website,rating,user_ratings_total,url,types,business_status',
-    key: apiKey
-  };
   try {
-    const response = await axios.get(DETAILS_URL, {
-      params,
+    const response = await axios.get(`${DETAILS_URL_BASE}${placeId}`, {
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Goog-Api-Key': apiKey,
+        'X-Goog-FieldMask': CONFIG.DETAILS_FIELDS
+      },
       timeout: 30000,
       validateStatus: () => true
     });
     const data = response.data || {};
-    if (data.status && data.status !== 'OK') {
-      console.log(`  ⚠️ details status=${data.status} for ${placeId}: ${data.error_message || ''}`);
+    if (response.status !== 200) {
+      console.log(`  ⚠️ Details HTTP ${response.status} for ${placeId}: ${data.error?.message || ''}`);
+      return {};
     }
-    return data.result || {};
+    return data;
   } catch (err) {
     console.log(`  ❌ Details threw for ${placeId}: ${err.message}`);
     return {};
   }
 }
 
-// ==================== COLLECT PLACES (with diagnostics) ====================
+// ==================== NEW TEXT SEARCH ====================
 async function collectPlaces(query, location, apiKey, maxResults) {
   const tag = `[collectPlaces "${location}"]`;
   console.log(`${tag} START query="${query}" max=${maxResults}`);
 
-  const results = [];
-  const seen = new Set();
-  const queryFormats = [
-    `${query} in ${location}`,
-    `${query} near ${location}`,
-    `${query} ${location}`,
-    `${query}+${location}`
-  ];
+  const results = [], seen = new Set();
+  const queryFormats = [`${query} in ${location}`, `${query} near ${location}`, `${query} ${location}`];
 
   for (let fi = 0; fi < queryFormats.length; fi++) {
     if (results.length >= maxResults) break;
-    const q = queryFormats[fi];
-    console.log(`${tag} format ${fi + 1}/${queryFormats.length}: "${q}"`);
+    const textQuery = queryFormats[fi];
+    console.log(`${tag} format ${fi + 1}: "${textQuery}"`);
 
-    let pageToken = null;
-    let page = 0;
-
+    let pageToken = null, page = 0;
     do {
       if (page >= 3 || results.length >= maxResults) break;
-
-      const params = { key: apiKey, query: q };
-      if (pageToken) params.pagetoken = pageToken;
+      const body = { textQuery, pageSize: 20 };
+      if (pageToken) body.pageToken = pageToken;
 
       try {
-        const response = await axios.get(TEXT_SEARCH_URL, {
-          params,
+        const response = await axios.post(TEXT_SEARCH_URL, body, {
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Goog-Api-Key': apiKey,
+            'X-Goog-FieldMask': CONFIG.TEXT_SEARCH_FIELDS
+          },
           timeout: 30000,
           validateStatus: () => true
         });
 
         const data = response.data || {};
-        const status = data.status;
-        const items = Array.isArray(data.results) ? data.results : [];
+        const places = data.places || [];
 
-        // >>> THE CRITICAL LOG <<<
-        console.log(
-          `${tag} HTTP=${response.status} status=${status} ` +
-          `items=${items.length} next=${Boolean(data.next_page_token)} ` +
-          `err="${data.error_message || ''}"`
-        );
-
-        if (items.length === 0 && status === 'OK') {
-          console.log(`${tag} ⚠️ status=OK but ZERO items. Body:`,
-            JSON.stringify(data).slice(0, 600));
-        }
-
-        if (status === 'ZERO_RESULTS') {
-          console.log(`${tag} (zero results for this format)`);
-          break;
-        }
-        if (status !== 'OK') {
-          console.log(`${tag} ❌ non-OK status=${status}`);
-          if (status === 'REQUEST_DENIED' || status === 'OVER_QUERY_LIMIT') {
-            console.log(`${tag} ⛔ Aborting: auth/quota issue.`);
-            return results;
-          }
+        console.log(`${tag} HTTP=${response.status} places=${places.length} next=${Boolean(data.nextPageToken)}`);
+        if (response.status !== 200) {
+          console.log(`${tag} ❌ API error: ${data.error?.message || JSON.stringify(data).slice(0, 300)}`);
+          if (response.status === 401 || response.status === 403) return results;
           break;
         }
 
-        let added = 0, skippedNoId = 0, skippedDup = 0;
-        for (const item of items) {
-          const pid = item.place_id;
-          if (!pid) { skippedNoId++; continue; }
-          if (seen.has(pid)) { skippedDup++; continue; }
+        let added = 0;
+        for (const item of places) {
+          const pid = item.id;
+          if (!pid || seen.has(pid)) continue;
           seen.add(pid);
           results.push(item);
           added++;
           if (results.length >= maxResults) break;
         }
-        console.log(
-          `${tag} added=${added} skippedNoId=${skippedNoId} ` +
-          `skippedDup=${skippedDup} total=${results.length}`
-        );
+        console.log(`${tag} added=${added} total=${results.length}`);
 
-        pageToken = data.next_page_token || null;
+        pageToken = data.nextPageToken || null;
         if (pageToken) await new Promise(r => setTimeout(r, 2000));
         page++;
       } catch (err) {
         console.log(`${tag} ❌ threw: ${err.message}`);
-        if (err.response) {
-          console.log(`     Body: ${JSON.stringify(err.response.data).slice(0, 300)}`);
-        }
         break;
       }
     } while (pageToken && results.length < maxResults);
   }
-
   console.log(`${tag} FINAL total=${results.length}`);
   return results.slice(0, maxResults);
+}
+
+// ==================== FIELD EXTRACTION HELPERS ====================
+function getDisplayName(place) {
+  return place.displayName?.text || place.displayName || '';
+}
+function getWebsite(place) {
+  return place.websiteUri || '';
+}
+function getPhone(place) {
+  return place.nationalPhoneNumber || place.internationalPhoneNumber || '';
+}
+function getAddress(place) {
+  return place.formattedAddress || '';
+}
+function getMapsUri(place) {
+  return place.googleMapsUri || '';
 }
 
 // ==================== MAIN HANDLER ====================
@@ -537,19 +376,13 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
   if (req.method === 'OPTIONS') return res.status(200).end();
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
     const API_KEY = process.env.GOOGLE_PLACES_API_KEY;
-    if (!API_KEY) {
-      return res.status(500).json({ error: 'GOOGLE_PLACES_API_KEY not configured' });
-    }
+    if (!API_KEY) return res.status(500).json({ error: 'GOOGLE_PLACES_API_KEY not configured' });
 
-    // -------- Parse + trim input --------
     const body = req.body || {};
     const query = typeof body.query === 'string' ? body.query.trim() : '';
     const location = typeof body.location === 'string' ? body.location.trim() : '';
@@ -558,118 +391,75 @@ module.exports = async (req, res) => {
     const skipWebsiteLookup = Boolean(body.skipWebsiteLookup);
     const maxResultsNum = Math.min(Math.max(parseInt(body.maxResults, 10) || 100, 1), 2000);
 
-    console.log('📋 Parameters:');
-    console.log(`   query="${query}"`);
-    console.log(`   location="${location}"`);
-    console.log(`   subAreas="${subAreas}"`);
-    console.log(`   maxResults=${maxResultsNum}`);
-    console.log(`   skipEmails=${skipEmails}`);
-    console.log(`   skipWebsiteLookup=${skipWebsiteLookup}`);
+    console.log(`📋 query="${query}" location="${location}" max=${maxResultsNum} skipEmails=${skipEmails}`);
 
-    if (!query || !location) {
-      return res.status(400).json({
-        error: 'query and location must be non-empty strings'
-      });
-    }
+    if (!query || !location) return res.status(400).json({ error: 'query and location must be non-empty strings' });
 
-    // -------- Build location list --------
     const locations = [location];
-    if (subAreas) {
-      locations.push(...subAreas.split(',').map(s => s.trim()).filter(Boolean));
-    }
+    if (subAreas) locations.push(...subAreas.split(',').map(s => s.trim()).filter(Boolean));
     console.log(`📍 Locations (${locations.length}): ${locations.join(' | ')}`);
 
+    // -------- Collect places using NEW API --------
+    const allPlaces = [], seenIds = new Set();
     const perLocationCap = Math.max(1, Math.ceil(maxResultsNum / locations.length));
 
-    // -------- Collect places --------
-    const allPlaces = [];
-    const seenIds = new Set();
     for (const area of locations) {
       if (allPlaces.length >= maxResultsNum) break;
-      const remaining = maxResultsNum - allPlaces.length;
-      const cap = Math.min(perLocationCap, remaining);
+      const cap = Math.min(perLocationCap, maxResultsNum - allPlaces.length);
       const found = await collectPlaces(query, area, API_KEY, cap);
       for (const p of found) {
-        if (p.place_id && !seenIds.has(p.place_id)) {
-          seenIds.add(p.place_id);
-          allPlaces.push(p);
-        }
+        if (p.id && !seenIds.has(p.id)) { seenIds.add(p.id); allPlaces.push(p); }
       }
     }
 
     const finalPlaces = allPlaces.slice(0, maxResultsNum);
-
-    console.log('\n🔎 DEBUG summary:');
-    console.log(`   locations searched: ${locations.length}`);
-    console.log(`   allPlaces collected: ${allPlaces.length}`);
-    console.log(`   finalPlaces: ${finalPlaces.length}`);
-    if (allPlaces.length > 0) {
-      console.log(`   first place keys: ${Object.keys(allPlaces[0]).join(', ')}`);
-      console.log(`   first place_id: ${allPlaces[0].place_id}`);
-      console.log(`   first name: ${allPlaces[0].name}`);
-    }
+    console.log(`🔎 DEBUG: locations=${locations.length} allPlaces=${allPlaces.length} finalPlaces=${finalPlaces.length}`);
 
     if (finalPlaces.length === 0) {
       return res.status(200).json({
-        success: true,
-        total: 0,
-        emailsFound: 0,
-        emailPercentage: 0,
-        data: [],
-        excel: null,
-        message: 'No businesses found. Check server logs — the [collectPlaces] lines show the raw Google status for each query format.',
-        debug: {
-          query,
-          location,
-          locationsSearched: locations,
-          apiReached: true
-        }
+        success: true, total: 0, emailsFound: 0, emailPercentage: 0, data: [], excel: null,
+        message: 'No businesses found. Check logs for API status. Ensure Places API (New) is enabled and key has no API restrictions blocking it.',
+        debug: { query, location, locationsSearched: locations }
       });
     }
 
     // -------- Process each business --------
     const rows = new Array(finalPlaces.length);
-    let emailsFound = 0;
-    let completed = 0;
+    let emailsFound = 0, completed = 0;
 
     const processOne = async (place, index) => {
-      const details = await getPlaceDetails(place.place_id, API_KEY);
+      // Place Details (New) — note the different response structure [citation:2][citation:14]
+      const details = await getPlaceDetails(place.id, API_KEY);
       await new Promise(r => setTimeout(r, CONFIG.DETAILS_DELAY_MS));
 
-      let website = details.website || '';
-      let email = '';
-      let emailSource = '';
+      let website = getWebsite(details) || getWebsite(place) || '';
+      let email = '', emailSource = '';
 
       if (!skipEmails) {
         if (!website && !skipWebsiteLookup) {
           const guessed = await googleSearchForWebsite(
-            details.name || place.name,
-            details.formatted_address || place.formatted_address || location
+            getDisplayName(details) || getDisplayName(place),
+            getAddress(details) || getAddress(place) || location
           );
           if (guessed) website = guessed;
         }
-
         if (website) {
           const found = await findEmailsForWebsite(website);
-          if (found.emails.length) {
-            email = found.emails[0];
-            emailSource = found.emailSource;
-            emailsFound++;
-          }
+          if (found.emails.length) { email = found.emails[0]; emailSource = found.emailSource; emailsFound++; }
         }
       }
 
       rows[index] = {
-        name: details.name || place.name || '',
-        category: (details.types || []).slice(0, 2).join(', '),
-        phone: details.formatted_phone_number || '',
+        name: getDisplayName(details) || getDisplayName(place) || '',
+        category: (details.types || place.types || []).slice(0, 2).join(', '),
+        phone: getPhone(details) || getPhone(place) || '',
         website,
         email,
         emailSource,
-        address: details.formatted_address || place.formatted_address || '',
-        rating: details.rating || '',
-        reviewCount: details.user_ratings_total || '',
-        mapsLink: details.url || ''
+        address: getAddress(details) || getAddress(place) || '',
+        rating: details.rating || place.rating || '',
+        reviewCount: details.userRatingCount || place.userRatingCount || '',
+        mapsLink: getMapsUri(details) || getMapsUri(place) || ''
       };
 
       completed++;
@@ -685,33 +475,27 @@ module.exports = async (req, res) => {
 
     const validRows = rows.filter(Boolean);
     const totalWithEmail = validRows.filter(r => r.email).length;
-    const emailPercentage = validRows.length
-      ? Math.round((totalWithEmail / validRows.length) * 100)
-      : 0;
+    const emailPercentage = validRows.length ? Math.round((totalWithEmail / validRows.length) * 100) : 0;
 
     // -------- Build Excel --------
     const wb = XLSX.utils.book_new();
     const header = ['Name', 'Email', 'Phone', 'Website', 'Category', 'Address', 'Rating', 'Review Count', 'Google Maps Link', 'Email Source'];
     const wsData = [header, ...validRows.map(r => [
-      r.name, r.email, r.phone, r.website, r.category, r.address,
-      r.rating, r.reviewCount, r.mapsLink, r.emailSource
+      r.name, r.email, r.phone, r.website, r.category, r.address, r.rating, r.reviewCount, r.mapsLink, r.emailSource
     ])];
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(wsData), 'All Leads');
 
     const emailRows = validRows.filter(r => r.email);
     if (emailRows.length) {
-      const ews = XLSX.utils.aoa_to_sheet([
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
         ['Name', 'Email', 'Phone', 'Website', 'Category', 'Address', 'Email Source'],
         ...emailRows.map(r => [r.name, r.email, r.phone, r.website, r.category, r.address, r.emailSource])
-      ]);
-      XLSX.utils.book_append_sheet(wb, ews, 'Emails Only');
+      ]), 'Emails Only');
     }
 
     const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
-    console.log('\n✅ ===== COMPLETE =====');
-    console.log(`   Total: ${validRows.length} | Emails: ${totalWithEmail} (${emailPercentage}%)`);
-    console.log(`   Duration: ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+    console.log(`\n✅ COMPLETE: ${validRows.length} businesses | ${totalWithEmail} emails (${emailPercentage}%) | ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 
     return res.status(200).json({
       success: true,
