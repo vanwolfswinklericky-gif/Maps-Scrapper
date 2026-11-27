@@ -2,6 +2,7 @@
 const axios = require('axios');
 const cheerio = require('cheerio');
 const XLSX = require('xlsx');
+const dns = require('dns').promises; // Added for Email Validation
 
 // ==================== NEW API CONSTANTS ====================
 const TEXT_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText';
@@ -69,20 +70,25 @@ const CONFIG = {
   USE_GOOGLE_SEARCH_FALLBACK: true,
   GOOGLE_SEARCH_URL: 'https://www.google.com/search',
   CONCURRENCY_FOR_SITES: 4,
-  // New API requires explicit field masks [citation:1][citation:5]
   TEXT_SEARCH_FIELDS: 'places.id,places.displayName,places.formattedAddress,places.websiteUri,places.nationalPhoneNumber,places.rating,places.userRatingCount,places.types,places.googleMapsUri',
   DETAILS_FIELDS: 'id,displayName,formattedAddress,websiteUri,nationalPhoneNumber,rating,userRatingCount,types,googleMapsUri'
 };
 
-// ==================== EMAIL HELPERS ====================
+// ==================== EMAIL HELPERS & VALIDATION ====================
 function normalizeEmail(raw) {
   if (!raw) return '';
-  return raw
+  let cleaned = raw
     .replace(/^mailto:/i, '').replace(/^email:/i, '').replace(/^e-mail:/i, '')
     .replace(/\?subject=.*$/i, '').replace(/\?body=.*$/i, '')
     .replace(/^["'<(\[]+|["'>)\]]+$/g, '')
     .trim().toLowerCase()
     .replace(/[.,;:!?]+$/, '');
+    
+  // FIX: Handle malformed emails like "www.info@domain.com" or "maillto_rjmex..."
+  if (cleaned.startsWith('www.')) cleaned = cleaned.substring(4);
+  if (cleaned.includes('maillto_')) cleaned = cleaned.replace('maillto_', '');
+  
+  return cleaned;
 }
 
 function isValidEmail(email) {
@@ -101,6 +107,18 @@ function isValidEmail(email) {
   return true;
 }
 
+// NEW: DNS MX Record Validator (Prevents sending to dead domains)
+async function hasValidMXRecord(email) {
+  if (!isValidEmail(email)) return false;
+  const domain = email.split('@')[1];
+  try {
+    const records = await dns.resolveMx(domain);
+    return records && records.length > 0;
+  } catch (err) {
+    return false;
+  }
+}
+
 function scoreEmail(email) {
   let score = 0;
   for (const { re, weight } of EMAIL_PRIORITY) if (re.test(email)) { score += weight; break; }
@@ -110,7 +128,6 @@ function scoreEmail(email) {
   return score;
 }
 
-// ==================== EMAIL EXTRACTION ====================
 function extractEmails(text) {
   if (!text || typeof text !== 'string') return [];
   const found = new Set();
@@ -141,7 +158,7 @@ async function fetchHtml(url) {
   } catch (_) { return null; }
 }
 
-// ==================== PAGE PARSING ====================
+// ==================== PAGE PARSING & SCRAPING ====================
 function parseEmailsFromHtml(html, baseUrl) {
   const $ = cheerio.load(html);
   const emails = new Set();
@@ -176,7 +193,6 @@ function parseEmailsFromHtml(html, baseUrl) {
   return Array.from(emails);
 }
 
-// ==================== LINK DISCOVERY ====================
 function findContactLinks(html, baseUrl) {
   try {
     const $ = cheerio.load(html);
@@ -209,7 +225,6 @@ async function fetchSitemapContactUrls(baseUrl) {
   } catch (_) { return []; }
 }
 
-// ==================== WEBSITE EMAIL FINDER ====================
 async function findEmailsForWebsite(website) {
   const result = { emails: [], pagesTried: 0, emailSource: null };
   if (!website) return result;
@@ -240,7 +255,6 @@ async function findEmailsForWebsite(website) {
   return result;
 }
 
-// ==================== GOOGLE SEARCH FALLBACK ====================
 async function googleSearchForWebsite(businessName, address) {
   if (!CONFIG.USE_GOOGLE_SEARCH_FALLBACK) return null;
   try {
@@ -262,7 +276,6 @@ async function googleSearchForWebsite(businessName, address) {
   return null;
 }
 
-// ==================== NEW PLACE DETAILS ====================
 async function getPlaceDetails(placeId, apiKey) {
   try {
     const response = await axios.get(`${DETAILS_URL_BASE}${placeId}`, {
@@ -286,7 +299,6 @@ async function getPlaceDetails(placeId, apiKey) {
   }
 }
 
-// ==================== NEW TEXT SEARCH ====================
 async function collectPlaces(query, location, apiKey, maxResults) {
   const tag = `[collectPlaces "${location}"]`;
   console.log(`${tag} START query="${query}" max=${maxResults}`);
@@ -350,22 +362,11 @@ async function collectPlaces(query, location, apiKey, maxResults) {
   return results.slice(0, maxResults);
 }
 
-// ==================== FIELD EXTRACTION HELPERS ====================
-function getDisplayName(place) {
-  return place.displayName?.text || place.displayName || '';
-}
-function getWebsite(place) {
-  return place.websiteUri || '';
-}
-function getPhone(place) {
-  return place.nationalPhoneNumber || place.internationalPhoneNumber || '';
-}
-function getAddress(place) {
-  return place.formattedAddress || '';
-}
-function getMapsUri(place) {
-  return place.googleMapsUri || '';
-}
+function getDisplayName(place) { return place.displayName?.text || place.displayName || ''; }
+function getWebsite(place) { return place.websiteUri || ''; }
+function getPhone(place) { return place.nationalPhoneNumber || place.internationalPhoneNumber || ''; }
+function getAddress(place) { return place.formattedAddress || ''; }
+function getMapsUri(place) { return place.googleMapsUri || ''; }
 
 // ==================== MAIN HANDLER ====================
 module.exports = async (req, res) => {
@@ -399,7 +400,6 @@ module.exports = async (req, res) => {
     if (subAreas) locations.push(...subAreas.split(',').map(s => s.trim()).filter(Boolean));
     console.log(`📍 Locations (${locations.length}): ${locations.join(' | ')}`);
 
-    // -------- Collect places using NEW API --------
     const allPlaces = [], seenIds = new Set();
     const perLocationCap = Math.max(1, Math.ceil(maxResultsNum / locations.length));
 
@@ -428,12 +428,11 @@ module.exports = async (req, res) => {
     let emailsFound = 0, completed = 0;
 
     const processOne = async (place, index) => {
-      // Place Details (New) — note the different response structure [citation:2][citation:14]
       const details = await getPlaceDetails(place.id, API_KEY);
       await new Promise(r => setTimeout(r, CONFIG.DETAILS_DELAY_MS));
 
       let website = getWebsite(details) || getWebsite(place) || '';
-      let email = '', emailSource = '';
+      let email = '', emailSource = '', isEmailValid = false;
 
       if (!skipEmails) {
         if (!website && !skipWebsiteLookup) {
@@ -445,8 +444,26 @@ module.exports = async (req, res) => {
         }
         if (website) {
           const found = await findEmailsForWebsite(website);
-          if (found.emails.length) { email = found.emails[0]; emailSource = found.emailSource; emailsFound++; }
+          if (found.emails.length) {
+             // Validate the found email using DNS MX records
+             const potentialEmail = found.emails[0];
+             isEmailValid = await hasValidMXRecord(potentialEmail);
+             
+             if (isEmailValid) {
+                 email = potentialEmail;
+                 emailSource = found.emailSource;
+                 emailsFound++;
+             } else {
+                 console.log(`  ❌ Found ${potentialEmail} but domain has no MX record (dead email).`);
+             }
+          }
         }
+      }
+
+      // 🚨 FILTERING LOGIC: If a business has no email, we discard it entirely.
+      if (!email && !skipEmails) {
+        completed++;
+        return; 
       }
 
       rows[index] = {
@@ -473,6 +490,7 @@ module.exports = async (req, res) => {
       await Promise.all(batch.map((p, j) => processOne(p, i + j)));
     }
 
+    // Filter out any undefined rows (the ones that were skipped)
     const validRows = rows.filter(Boolean);
     const totalWithEmail = validRows.filter(r => r.email).length;
     const emailPercentage = validRows.length ? Math.round((totalWithEmail / validRows.length) * 100) : 0;
@@ -483,28 +501,20 @@ module.exports = async (req, res) => {
     const wsData = [header, ...validRows.map(r => [
       r.name, r.email, r.phone, r.website, r.category, r.address, r.rating, r.reviewCount, r.mapsLink, r.emailSource
     ])];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(wsData), 'All Leads');
-
-    const emailRows = validRows.filter(r => r.email);
-    if (emailRows.length) {
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
-        ['Name', 'Email', 'Phone', 'Website', 'Category', 'Address', 'Email Source'],
-        ...emailRows.map(r => [r.name, r.email, r.phone, r.website, r.category, r.address, r.emailSource])
-      ]), 'Emails Only');
-    }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(wsData), 'Valid Leads');
 
     const excelBuffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
 
-    console.log(`\n✅ COMPLETE: ${validRows.length} businesses | ${totalWithEmail} emails (${emailPercentage}%) | ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
+    console.log(`\n✅ COMPLETE: ${validRows.length} businesses with verified emails | ${((Date.now() - startedAt) / 1000).toFixed(1)}s`);
 
     return res.status(200).json({
       success: true,
       total: validRows.length,
       emailsFound: totalWithEmail,
-      emailPercentage,
+      emailPercentage: 100, // 100% since we only return those with emails
       data: validRows,
       excel: excelBuffer.toString('base64'),
-      message: `Scraped ${validRows.length} businesses, found ${totalWithEmail} emails (${emailPercentage}%)`
+      message: `Scraped ${validRows.length} businesses with valid, verified emails.`
     });
 
   } catch (error) {
